@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: group4-CloudFormation deployment pipelines template
+Parameters:
+  StackName:
+    Description: Specify a stackname for the template.
+    Type: String
+    Default: group4webapp-stack
+  CodeCommitRepo:
+    Description: Specify the repo you want to use as source
+    Type: String
+    Default: Group4_Repo
+Resources:
+  # CloudWatchEventRule:
+  #   Type: "AWS::Events::Rule"
+  #   Properties:
+  #     Name: Group4EventTrigger
+  #     Description: "CodeCommit repository change trigger for CodePipeline"
+  #     RoleArn: arn:aws:iam::920119599456:role/service-role/Cil-Academy-EventBridge-Invoke-Event-Bus-Role
+  #     EventPattern:
+  #       source:
+  #         - aws.codecommit
+  #       detail-type:
+  #         - CodeCommit Repository State Change
+  #       resources:
+  #         - !Ref CodeCommitRepo
+  #     State: ENABLED
+  #     Targets:
+  #       - Arn:
+  #           Fn::Sub:
+  #             - "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${PipelineName}"
+  #             - { PipelineName: !Ref CodePipeline }
+  #         Id: "PipelineTarget"
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: group4-artifact-bucket
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: group4-build
+      Description: group4CodeBuild deployment
+      ServiceRole: arn:aws:iam::920119599456:role/cil-academy-cicd-codebuild-role
+      Artifacts:
+        Type: CODEPIPELINE
+        Location: !Ref ArtifactBucket
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              runtime-versions:
+                python: 3.8
+            build:
+              commands:
+                - echo Build started on `date`                
+                - aws s3 cp webapp s3://group4-artifact-bucket/webapp  --recursive
+                - aws s3 cp scripts/lambdafunction.zip s3://group4-artifact-bucket/
+      TimeoutInMinutes: 60
+  CodePipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: group4-codepipeline
+      RoleArn: arn:aws:iam::920119599456:role/cil-academy-cicd-codepipeline-role
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeCommit
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                RepositoryName: !Ref CodeCommitRepo
+                BranchName: main
+              RunOrder: 1
+
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              Configuration:
+                ProjectName: !Ref CodeBuildProject
+              RunOrder: 2
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                StackName: !Ref StackName
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_IAM
+                RoleArn: arn:aws:iam::920119599456:role/cil-academy-cicd-cloudformation-role
+                TemplatePath: SourceOutput::scripts/cfn/infratemplate.yaml
+
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 3
